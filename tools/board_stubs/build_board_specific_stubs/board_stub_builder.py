@@ -7,9 +7,29 @@ import os
 import re
 import sys
 from collections import defaultdict
+import logging
+import threading
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+# Setup logging
+#logging.basicConfig(
+#    level=logging.DEBUG if DEBUG else logging.INFO,
+#    format='%(asctime)s - %(levelname)s - %(message)s'#
+#)
 
+
+def stubLogger( tag ):
+    logger = logging.getLogger(tag)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter(f'%(asctime)s - %(threadName)s {tag} %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+    return logger
+
+bindingsLog = stubLogger("bindings") 
 
 def get_board_pins(pin_filename):
+    logging.info(f"Reading pin file: {pin_filename}")
     records = []
 
     with open(pin_filename, encoding="utf-8") as pin_file:
@@ -73,6 +93,7 @@ def get_board_pins(pin_filename):
 
 
 def create_board_stubs(board_id, records, mappings, board_filename):
+    logging.info(f"create_board_stubs {board_id} Reading board file: {board_filename}")
     pins = []
     members = []
     unmapped = []
@@ -203,6 +224,7 @@ def create_board_stubs(board_id, records, mappings, board_filename):
 
 
 def process(board_mappings, export_dir):
+    logging.info(f"Processing board mappings for export directory: {export_dir}")
     total_boards = 0
     total_pins = 0
     total_members = 0
@@ -260,8 +282,10 @@ def process(board_mappings, export_dir):
         for board in boards:
             print(f"    - {board}")
 
+logBuildStubs = stubLogger("build_stubs")
 
 def build_stubs(circuitpython_dir, circuitpython_org_dir, export_dir, version="8.2.9"):
+    logBuildStubs.info(f"Building stubs in {circuitpython_dir} / {circuitpython_org_dir} for version {version}")
     if circuitpython_dir[-1] != "/":
         circuitpython_dir = circuitpython_dir + "/"
 
@@ -273,10 +297,12 @@ def build_stubs(circuitpython_dir, circuitpython_org_dir, export_dir, version="8
 
     libraries = {}
     if circuitpython_org_dir is None:
+        logBuildStubs.info(f"getting libraries using shared bindings matrix")
         libraries = shared_bindings_matrix.support_matrix_by_board(
             use_branded_name=False, withurl=False
         )
     else:
+        logBuildStubs.info(f"getting from {circuitpython_org_dir}/_data/files.json")
         with open(f"{circuitpython_org_dir}/_data/files.json") as libraries_file:
             libraries_list = json.load(libraries_file)
         for library in libraries_list:
@@ -285,6 +311,7 @@ def build_stubs(circuitpython_dir, circuitpython_org_dir, export_dir, version="8
                 if version_data["version"] == version:
                     libraries[board] = version_data
 
+    logBuildStubs.info(f"creating aliases")
     aliases = {}
     for board, renames in shared_bindings_matrix.ALIASES_BY_BOARD.items():
         for rename in renames:
@@ -297,6 +324,7 @@ def build_stubs(circuitpython_dir, circuitpython_org_dir, export_dir, version="8
         else:
             lookup = board
 
+        logBuildStubs.info(f"mapping board {lookup}")
         port_path = f"{circuitpython_dir}ports/{board_data['port']}/"
         board_path = f"{port_path}boards/{lookup}/"
         pins_path = f"{board_path}pins.c"
@@ -336,6 +364,7 @@ def build_stubs(circuitpython_dir, circuitpython_org_dir, export_dir, version="8
         board_mappings[board]["nvm_size"] = nvm_size
         board_mappings[board]["libraries"] = libraries.get(board, None)
 
+    logBuildStubs.info(f"processing mappings")
     process(board_mappings, export_dir)
 
 

@@ -27,6 +27,11 @@ import pathlib
 import re
 import subprocess
 import tomllib
+import logging
+import threading
+import time
+
+bindingsLog = logging.getLogger("bindings") 
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -329,14 +334,22 @@ def support_matrix_by_board(
     """Compiles a list of the available core modules available for each
     board.
     """
+    bindingsLog.info("Compiling support matrix by board")
     base = build_module_map()
 
     def support_matrix(arg):
         board_id, board_info = arg
+        bindingsLog.info(f"support_matrix({board_id},...)")
+        startTime = time.time()
+        def infoOut( msg ):
+            bindingsLog.info(f"smx({board_id}) {msg} @{time.time()-startTime:.2f}s")
+        
         port = board_info["port"]
+        
         board_directory = board_info["directory"]
         port_dir = board_directory.parent.parent
         if port != "zephyr-cp":
+            infoOut(f"get_settings_from_makefilea")
             settings = get_settings_from_makefile(str(port_dir), board_directory.name)
             autogen_board_info = None
         else:
@@ -348,6 +361,7 @@ def support_matrix_by_board(
             with autogen_board_info_fn.open("rb") as f:
                 autogen_board_info = tomllib.load(f)
 
+        infoOut(f"checking branded name")
         if use_branded_name or add_branded_name:
             if autogen_board_info:
                 branded_name = autogen_board_info["name"]
@@ -367,6 +381,7 @@ def support_matrix_by_board(
             board_name = board_id
 
         if add_chips:
+            infoOut(f"adding chips")
             with open(board_directory / "mpconfigboard.h") as get_name:
                 board_contents = get_name.read()
             mcu_re = re.search(r"(?<=MICROPY_HW_MCU_NAME)\s+(.+)", board_contents)
@@ -389,6 +404,7 @@ def support_matrix_by_board(
                 flash = ""
 
         if add_pins:
+            infoOut(f"adding pins")
             pins = []
             try:
                 with open(board_directory / "pins.c") as get_name:
@@ -403,6 +419,7 @@ def support_matrix_by_board(
                         chip_pin = pin_re.group(2)
                         pins.append((board_pin, chip_pin))
 
+        infoOut(f"adding modules")
         board_modules = []
         if autogen_board_info:
             autogen_modules = autogen_board_info["modules"]
@@ -425,12 +442,14 @@ def support_matrix_by_board(
 
         frozen_modules = []
         if "FROZEN_MPY_DIRS" in settings:
+            infoOut(f"adding frozen")
             frozen_modules = frozen_modules_from_dirs(settings["FROZEN_MPY_DIRS"], withurl)
             if frozen_modules:
                 frozen_modules.sort()
 
         # generate alias boards too
 
+        infoOut(f"creating board_infor")
         board_info = {
             "modules": board_modules,
             "frozen_libraries": frozen_modules,
@@ -468,7 +487,8 @@ def support_matrix_by_board(
                 if add_pins:
                     board_info["pins"] = pins
                 board_matrix.append((alias, board_info))
-
+        elapsed = time.time() - startTime
+        bindingsLog.info(f"support_matrix({board_id}) returning in {elapsed:.2f}s")
         return board_matrix  # this is now a list of (board,modules)
 
     board_mapping = get_board_mapping()
@@ -476,13 +496,25 @@ def support_matrix_by_board(
     for board in board_mapping:
         if not board_mapping[board].get("alias", False):
             real_boards.append((board, board_mapping[board]))
-    executor = ThreadPoolExecutor(max_workers=os.cpu_count())
+    
+    executorData = dict(
+        maxWorkers = os.cpu_count(),
+        workers=0
+    )
+    def initialize_worker(init=None):
+        worker = executorData.get("workers",0) + 1
+        executorData["workers"] += 1
+        threading.current_thread().name = f"SMXW-{worker}"
+        
+    bindingsLog.info(f"start mapping {len(real_boards)} boards with {executorData['maxWorkers']} workers")
+    executor = ThreadPoolExecutor(max_workers=executorData['maxWorkers'],initializer=initialize_worker)
     mapped_exec = executor.map(support_matrix, real_boards)
     # flatmap with comprehensions
     boards = dict(
         sorted([board for matrix in mapped_exec for board in matrix], key=lambda x: x[0])
     )
 
+    bindingsLog.info(f"support_masupport_matrix_by_board returning boards {boards.keys()}")
     return boards
 
 
