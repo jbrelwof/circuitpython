@@ -46,6 +46,6 @@ setup(
     package_data=package_data,
     package_dir = package_dir,
     setup_requires=["setuptools>=38.6.0"],
-    version="__version__",
+    version="0.1",
     zip_safe=False,
 )
