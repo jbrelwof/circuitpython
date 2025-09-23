@@ -102,8 +102,66 @@ typedef struct _gc_info_t {
     #endif
 } gc_info_t;
 
+#ifndef CIRCUITPY_GC_TRACK_LIVE
+#define CIRCUITPY_GC_TRACK_LIVE 1
+#endif
+
 void gc_info(gc_info_t *info);
 void gc_dump_info(const mp_print_t *print);
 void gc_dump_alloc_table(const mp_print_t *print);
+
+#if CIRCUITPY_GC_TRACK_LIVE
+
+int gc_live_mem_free(void);
+int gc_live_mem_alloc(void);
+int gc_live_mem_reset(void);
+int gc_live_mem_sync(void);
+int gc_live_mem_collect_sync(void);
+int gc_live_mem_quick_free(void);
+int gc_live_mem_quick_used(void);
+mp_obj_t gc_live_mem_info(void);
+
+#define CPY_GCTLI_CAT_(A, B) A##B
+#define CPY_GCTLI_CAT3_(A, B, C) A##B##C
+#define CPY_GCTLI_CAT(A, B) CPY_GCTLI_CAT_(A, B)
+#define CPY_GCTLI_CAT3(A, B, C) CPY_GCTLI_CAT3_(A, B, C)
+
+
+// single value entries
+#define CPY_GCTLI_ON_ENTRIES(MAC, DATA)    \
+    MAC(used, DATA)                     \
+    MAC(bytesPerBlock, DATA)            \
+    MAC(A_FREE_TO_HEAD, DATA)           \
+    MAC(A_FREE_TO_TAIL, DATA)           \
+    MAC(A_ANY_TO_FREE, DATA)            \
+    MAC(A_HEAD_TO_MARK, DATA)           \
+    MAC(A_MARK_TO_HEAD, DATA)           \
+
+// _count/_requested entries
+#define CPY_GCTLI_ON_CR_ENTRIES(MAC, DATA)   \
+    MAC(alloc, DATA)                       \
+    MAC(free, DATA)                        \
+    MAC(realloc, DATA)                     \
+    MAC(realloc_alloc, DATA)               \
+    MAC(realloc_free, DATA)                \
+    MAC(sweep_free_blocks, DATA)           \
+    MAC(sweep_free_free_tail, DATA)        \
+
+
+#define CPY_GCTLI_ENTRY(TAG, DATA)           \
+    size_t TAG;
+
+#define CPY_GCTLI_CR_ENTRY(TAG, DATA)        \
+    size_t CPY_GCTLI_CAT(TAG, _count);      \
+    size_t CPY_GCTLI_CAT(TAG, _requested);  \
+
+typedef struct _gc_live_info_t {
+    CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_ENTRY, ~)
+    CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_ENTRY, ~)
+} gc_live_info_t;
+
+extern gc_live_info_t cp_gc_live_info;
+
+#endif
 
 #endif // MICROPY_INCLUDED_PY_GC_H

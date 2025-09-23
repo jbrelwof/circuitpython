@@ -38,6 +38,7 @@
 
 // CIRCUITPY-CHANGE
 #include "supervisor/shared/safe_mode.h"
+#include "py/enum.h"
 
 #include "supervisor/shared/serial.h"
 
@@ -156,6 +157,51 @@ void __attribute__ ((noinline)) gc_log_change(uint32_t start_block, uint32_t len
     change_me += length; // Break on this line.
 }
 #pragma GCC pop_options
+#define CIRCUITPY_LOG_HEAP_GROWTH(start_block, length) gc_log_change(start_block, length)
+
+#else
+
+#define CIRCUITPY_LOG_HEAP_GROWTH(start_block, length)
+
+#endif
+
+// CIRCUITPY-CHANGE
+#if CIRCUITPY_GC_TRACK_LIVE
+gc_live_info_t cp_gc_live_info = {
+    #define CPY_GCTLI_INIT(TAG, DATA) 0,
+    CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_INIT, ~)
+    0
+};
+
+
+#define CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, VAL) do { cp_gc_live_info.TAG += (VAL); } while (0);
+#define CIRCUITPY_GC_TRACK_LIVE_INC(TAG) CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, 1)
+#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG) CIRCUITPY_GC_TRACK_LIVE_ADD(CPY_GCTLI_CAT(A_, TAG), 1)
+
+#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB_FREE(TAG) do { \
+        cp_gc_live_info.used -= BYTES_PER_BLOCK;  CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG); } while (0)
+
+#define CIRCUITPY_GC_TRACK_LIVE_REQUESTED(TAG, VAL) do { cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count) += 1; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _requested) += (VAL);} while (0);
+
+#define CIRCUITPY_GC_TRACK_LIVE_USED_ADD(TAG, VAL) do { const size_t s = (VAL); cp_gc_live_info.used += s; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count) += 1; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _requested) += s;} while (0)
+
+#define CIRCUITPY_GC_TRACK_LIVE_USED_SUB(TAG, VAL) do { const size_t s = (VAL); cp_gc_live_info.used -= s; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count) += 1; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _requested) += s;} while (0)
+
+#define CIRCUITPY_GC_TRACK_LIVE_ALLOC(size) CIRCUITPY_GC_TRACK_LIVE_USED_ADD(alloc, size)
+#define CIRCUITPY_GC_TRACK_LIVE_FREE(size) CIRCUITPY_GC_TRACK_LIVE_USED_SUB(free, size)
+#define CIRCUITPY_GC_TRACK_LIVE_REALLOC(size) CIRCUITPY_GC_TRACK_LIVE_REQUESTED(realloc, size)
+#define CIRCUITPY_GC_TRACK_LIVE_REALLOC_ALLOC(size) CIRCUITPY_GC_TRACK_LIVE_USED_ADD(realloc_alloc, size)
+#define CIRCUITPY_GC_TRACK_LIVE_REALLOC_FREE(size) CIRCUITPY_GC_TRACK_LIVE_USED_SUB(realloc_free, size)
+
+#else
+#define CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, VAL)
+#define CIRCUITPY_GC_TRACK_LIVE_INC(TAG)
+#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG)
+#define CIRCUITPY_GC_TRACK_LIVE_REQUESTED(TAG, VAL)
+#define CIRCUITPY_GC_TRACK_LIVE_ALLOC(size)
+#define CIRCUITPY_GC_TRACK_LIVE_REALLOC(oldSize, newSize)
+#define CIRCUITPY_GC_TRACK_LIVE_REALLOC_FREE(size)
+#define CIRCUITPY_GC_TRACK_LIVE_FREE(size)
 #endif
 
 // Static functions for individual steps of the GC mark/sweep sequence
@@ -537,6 +583,7 @@ void gc_collect_root(void **ptrs, size_t len) {
         if (ATB_GET_KIND(area, block) == AT_HEAD) {
             // An unmarked head: mark it, and mark all its children
             ATB_HEAD_TO_MARK(area, block);
+            CIRCUITPY_GC_TRACK_LIVE_INC_ATB(HEAD_TO_MARK);
             #if MICROPY_GC_SPLIT_HEAP
             gc_mark_subtree(area, block);
             #else
@@ -611,6 +658,7 @@ static void MP_NO_INSTRUMENT PLACE_IN_ITCM(gc_mark_subtree)(size_t block)
                 // An unmarked head. Mark it, and push it on gc stack.
                 TRACE_MARK(ptr_block, ptr);
                 ATB_HEAD_TO_MARK(ptr_area, ptr_block);
+                CIRCUITPY_GC_TRACK_LIVE_INC_ATB(HEAD_TO_MARK);
                 if (sp < MICROPY_ALLOC_GC_STACK_SIZE) {
                     MP_STATE_MEM(gc_block_stack)[sp] = ptr_block;
                     #if MICROPY_GC_SPLIT_HEAP
@@ -731,9 +779,10 @@ static void gc_sweep_free_blocks(void) {
 
     for (mp_state_mem_area_t *area = &MP_STATE_MEM(area); area != NULL; area = NEXT_AREA(area)) {
         size_t last_used_block = 0;
-        assert(area->gc_last_used_block <= area->gc_alloc_table_byte_len * BLOCKS_PER_ATB);
+        const size_t area_last_used_block = area->gc_last_used_block;
+        assert(area_last_used_block <= area->gc_alloc_table_byte_len * BLOCKS_PER_ATB);
 
-        for (size_t block = 0; block <= area->gc_last_used_block; block++) {
+        for (size_t block = 0; block <= area_last_used_block; block++) {
             MICROPY_GC_HOOK_LOOP(block);
             switch (ATB_GET_KIND(area, block)) {
                 case AT_HEAD:
@@ -748,6 +797,7 @@ static void gc_sweep_free_blocks(void) {
                 case AT_TAIL:
                     if (free_tail) {
                         ATB_ANY_TO_FREE(area, block);
+                        CIRCUITPY_GC_TRACK_LIVE_INC_ATB_FREE(ANY_TO_FREE);
                         #if CLEAR_ON_SWEEP
                         memset((void *)PTR_FROM_BLOCK(area, block), 0, BYTES_PER_BLOCK);
                         #endif
@@ -758,6 +808,7 @@ static void gc_sweep_free_blocks(void) {
 
                 case AT_MARK:
                     ATB_MARK_TO_HEAD(area, block);
+                    CIRCUITPY_GC_TRACK_LIVE_INC_ATB(MARK_TO_HEAD);
                     free_tail = 0;
                     last_used_block = block;
                     break;
@@ -995,19 +1046,19 @@ found:
     }
 
     // CIRCUITPY-CHANGE
-    #ifdef LOG_HEAP_ACTIVITY
-    gc_log_change(start_block, end_block - start_block + 1);
-    #endif
+    CIRCUITPY_LOG_HEAP_GROWTH(start_block, end_block - start_block + 1);
 
     area->gc_last_used_block = MAX(area->gc_last_used_block, end_block);
 
     // mark first block as used head
     ATB_FREE_TO_HEAD(area, start_block);
+    CIRCUITPY_GC_TRACK_LIVE_INC_ATB(FREE_TO_HEAD);
 
     // mark rest of blocks as used tail
     // TODO for a run of many blocks can make this more efficient
     for (size_t bl = start_block + 1; bl <= end_block; bl++) {
         ATB_FREE_TO_TAIL(area, bl);
+        CIRCUITPY_GC_TRACK_LIVE_INC_ATB(FREE_TO_TAIL);
     }
 
     // get pointer to first block
@@ -1064,6 +1115,7 @@ found:
     gc_dump_alloc_table(&mp_plat_print);
     #endif
 
+    CIRCUITPY_GC_TRACK_LIVE_ALLOC((end_block - start_block + 1) * BYTES_PER_BLOCK);
     // CIRCUITPY-CHANGE
     #if CIRCUITPY_MEMORYMONITOR
     memorymonitor_track_allocation(end_block - start_block + 1);
@@ -1133,22 +1185,25 @@ void gc_free(void *ptr) {
     }
     #endif
 
+    #if CIRCUITPY_GC_TRACK_LIVE
+    size_t cptl_start_block = block;
+    #endif
     // set the last_free pointer to this block if it's earlier in the heap
     if (block / BLOCKS_PER_ATB < area->gc_last_free_atb_index) {
         area->gc_last_free_atb_index = block / BLOCKS_PER_ATB;
     }
 
     // CIRCUITPY-CHANGE
-    #ifdef LOG_HEAP_ACTIVITY
-    gc_log_change(start_block, 0);
-    #endif
+    CIRCUITPY_LOG_HEAP_GROWTH(start_block, 0);
 
     // free head and all of its tail blocks
     do {
         ATB_ANY_TO_FREE(area, block);
+        CIRCUITPY_GC_TRACK_LIVE_INC_ATB(ANY_TO_FREE);
         block += 1;
     } while (ATB_GET_KIND(area, block) == AT_TAIL);
 
+    CIRCUITPY_GC_TRACK_LIVE_FREE((block - cptl_start_block) * BYTES_PER_BLOCK);
     GC_EXIT();
 
     #if EXTENSIVE_HEAP_PROFILING
@@ -1209,6 +1264,8 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
 
     GC_ENTER();
 
+    CIRCUITPY_GC_TRACK_LIVE_REALLOC(n_bytes);
+
     // get the GC block number corresponding to this pointer
     mp_state_mem_area_t *area;
     #if MICROPY_GC_SPLIT_HEAP
@@ -1261,7 +1318,10 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
         // free unneeded tail blocks
         for (size_t bl = block + new_blocks, count = n_blocks - new_blocks; count > 0; bl++, count--) {
             ATB_ANY_TO_FREE(area, bl);
+            CIRCUITPY_GC_TRACK_LIVE_INC_ATB(ANY_TO_FREE);
         }
+
+        CIRCUITPY_GC_TRACK_LIVE_REALLOC_FREE((n_blocks - new_blocks) * BYTES_PER_BLOCK);
 
         #if MICROPY_GC_SPLIT_HEAP
         if (MP_STATE_MEM(gc_last_free_area) != area) {
@@ -1282,9 +1342,7 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
         #endif
 
         // CIRCUITPY-CHANGE
-        #ifdef LOG_HEAP_ACTIVITY
-        gc_log_change(block, new_blocks);
-        #endif
+        CIRCUITPY_LOG_HEAP_GROWTH(block, new_blocks);
 
         #if CIRCUITPY_MEMORYMONITOR
         memorymonitor_track_allocation(new_blocks);
@@ -1300,8 +1358,10 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
         for (size_t bl = block + n_blocks; bl < end_block; bl++) {
             assert(ATB_GET_KIND(area, bl) == AT_FREE);
             ATB_FREE_TO_TAIL(area, bl);
-        }
+            CIRCUITPY_GC_TRACK_LIVE_INC_ATB(FREE_TO_TAIL);
 
+        }
+        CIRCUITPY_GC_TRACK_LIVE_REALLOC_ALLOC((new_blocks - n_blocks) * BYTES_PER_BLOCK);
         area->gc_last_used_block = MAX(area->gc_last_used_block, end_block);
 
         GC_EXIT();
@@ -1319,9 +1379,7 @@ void *gc_realloc(void *ptr_in, size_t n_bytes, bool allow_move) {
         #endif
 
         // CIRCUITPY-CHANGE
-        #ifdef LOG_HEAP_ACTIVITY
-        gc_log_change(block, new_blocks);
-        #endif
+        CIRCUITPY_LOG_HEAP_GROWTH(block, new_blocks);
 
         #if CIRCUITPY_MEMORYMONITOR
         memorymonitor_track_allocation(new_blocks);
@@ -1512,5 +1570,143 @@ void gc_dump_alloc_table(const mp_print_t *print) {
     }
     GC_EXIT();
 }
+
+
+// CIRCUITPY-CHANGE
+#if CIRCUITPY_GC_TRACK_LIVE
+
+
+int gc_live_mem_quick_free(void) {
+    GC_ENTER();
+    size_t info_free = 0;
+    for (mp_state_mem_area_t *area = &MP_STATE_MEM(area); area != NULL; area = NEXT_AREA(area)) {
+        bool finish = false;
+        for (size_t block = 0; !finish;) {
+            MICROPY_GC_HOOK_LOOP(block);
+            size_t kind = ATB_GET_KIND(area, block);
+            switch (kind) {
+                case AT_FREE:
+                    info_free += 1;
+                    break;
+            }
+
+            block++;
+            finish = (block == area->gc_alloc_table_byte_len * BLOCKS_PER_ATB);
+            // Get next block type if possible
+            if (!finish) {
+                kind = ATB_GET_KIND(area, block);
+            }
+        }
+    }
+
+    info_free *= BYTES_PER_BLOCK;
+
+    #if MICROPY_GC_SPLIT_HEAP_AUTO
+    info_free += gc_get_max_new_split();
+    #endif
+
+    GC_EXIT();
+    return info_free;
+}
+
+int gc_live_mem_quick_used(void) {
+    GC_ENTER();
+    size_t info_used = 0;
+    for (mp_state_mem_area_t *area = &MP_STATE_MEM(area); area != NULL; area = NEXT_AREA(area)) {
+        bool finish = false;
+        for (size_t block = 0 /*, len = 0, len_free = 0*/; !finish;) {
+            MICROPY_GC_HOOK_LOOP(block);
+            size_t kind = ATB_GET_KIND(area, block);
+            switch (kind) {
+                case AT_HEAD:
+                case AT_TAIL:
+                    info_used += 1;
+                    break;
+            }
+
+            block++;
+            finish = (block == area->gc_alloc_table_byte_len * BLOCKS_PER_ATB);
+            // Get next block type if possible
+            if (!finish) {
+                kind = ATB_GET_KIND(area, block);
+            }
+        }
+    }
+
+    info_used *= BYTES_PER_BLOCK;
+    GC_EXIT();
+    return info_used;
+}
+
+int gc_live_mem_free(void) {
+    return 0;
+}
+int gc_live_mem_alloc(void) {
+    return cp_gc_live_info.used;
+}
+int gc_live_mem_reset(void) {
+
+
+#define CPY_GCTLI_RESET(TAG, DATA)                    \
+    cp_gc_live_info.TAG = 0;     \
+
+    CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_RESET, ~)
+
+#define CPY_GCTLI_CR_RESET(TAG, DATA)                    \
+    cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count) = 0;     \
+    cp_gc_live_info.CPY_GCTLI_CAT(TAG, _requested) = 0; \
+
+    CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_RESET, ~)
+
+    cp_gc_live_info.bytesPerBlock = BYTES_PER_BLOCK;
+
+    return 0;
+}
+
+int gc_live_mem_collect_sync(void) {
+    gc_collect();
+    gc_live_mem_reset();
+    int rv = gc_live_mem_quick_used();
+    cp_gc_live_info.used = rv;
+    return rv;
+}
+
+int gc_live_mem_sync(void) {
+    GC_ENTER();
+    gc_live_mem_reset();
+    cp_gc_live_info.used = gc_live_mem_quick_used();
+    GC_EXIT();
+    return cp_gc_live_info.used;
+}
+
+mp_obj_t gc_live_mem_info(void) {
+
+#define CPY_GCTLI_INFO_COUNT(TAG, DATA) + 1
+
+#define CPY_GCTLI_CR_INFO_COUNT(TAG, DATA) + 2
+
+    mp_obj_dict_t *dict = MP_OBJ_TO_PTR(mp_obj_new_dict((0
+        CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_INFO_COUNT, ~)
+        CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_INFO_COUNT, ~)
+        )
+        ));
+
+    // mp_obj_dict_store(dict, MP_ROM_QSTR(MP_QSTR_used), MP_OBJ_NEW_SMALL_INT(cp_gc_live_info.used));
+
+#define CPY_GCTLI_INFO(TAG, DATA) \
+    mp_obj_dict_store(dict, MP_ROM_QSTR(CPY_GCTLI_CAT(MP_QSTR_, TAG)), MP_OBJ_NEW_SMALL_INT(cp_gc_live_info.TAG)); \
+
+    CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_INFO, ~)
+
+#define CPY_GCTLI_CR_INFO(TAG, DATA) \
+    mp_obj_dict_store(dict, MP_ROM_QSTR(CPY_GCTLI_CAT3(MP_QSTR_, TAG, _count)), MP_OBJ_NEW_SMALL_INT(cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count))); \
+    mp_obj_dict_store(dict, MP_ROM_QSTR(CPY_GCTLI_CAT3(MP_QSTR_, TAG, _requested)), MP_OBJ_NEW_SMALL_INT(cp_gc_live_info.CPY_GCTLI_CAT(TAG, _requested)));  \
+
+    CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_INFO, ~)
+
+    return dict;
+}
+
+#endif
 
 #endif // MICROPY_ENABLE_GC

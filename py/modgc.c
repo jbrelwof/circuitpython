@@ -27,6 +27,7 @@
 #include "py/mpstate.h"
 #include "py/obj.h"
 #include "py/gc.h"
+#include "py/enum.h"
 
 #if MICROPY_PY_GC && MICROPY_ENABLE_GC
 
@@ -81,6 +82,68 @@ static mp_obj_t gc_mem_alloc(void) {
 }
 MP_DEFINE_CONST_FUN_OBJ_0(gc_mem_alloc_obj, gc_mem_alloc);
 
+#if CIRCUITPY_GC_TRACK_LIVE
+
+#define CIRCUITPY_GC_TRACK_INT_RV_VOID(name)    \
+    static mp_obj_t gc_mem_##name##_live(void) { \
+        return MP_OBJ_NEW_SMALL_INT(gc_live_mem_##name()); \
+    }   \
+    MP_DEFINE_CONST_FUN_OBJ_0(gc_mem_##name##_live_obj, gc_mem_##name##_live);    \
+
+CIRCUITPY_GC_TRACK_INT_RV_VOID(free)
+CIRCUITPY_GC_TRACK_INT_RV_VOID(alloc)
+CIRCUITPY_GC_TRACK_INT_RV_VOID(reset)
+CIRCUITPY_GC_TRACK_INT_RV_VOID(sync)
+CIRCUITPY_GC_TRACK_INT_RV_VOID(collect_sync)
+CIRCUITPY_GC_TRACK_INT_RV_VOID(quick_free)
+CIRCUITPY_GC_TRACK_INT_RV_VOID(quick_used)
+
+#if 0
+typedef enum {
+    INFO_USED,
+    INFO_ALLOCS,
+    INFO_REALLOCS,
+    INFO_FREES,
+} live_mem_info_t;
+
+extern const mp_obj_type_t live_mem_info_type;
+
+MAKE_ENUM_VALUE(live_mem_info_type, info, USED, INFO_USED);
+MAKE_ENUM_VALUE(live_mem_info_type, info, ALLOCS, INFO_ALLOCS);
+MAKE_ENUM_VALUE(live_mem_info_type, info, REALLOCS, INFO_REALLOCS);
+MAKE_ENUM_VALUE(live_mem_info_type, info, FREES, INFO_FREES);
+
+MAKE_ENUM_MAP(live_mem_info) {
+    MAKE_ENUM_MAP_ENTRY(info, USED),
+    MAKE_ENUM_MAP_ENTRY(info, ALLOCS),
+    MAKE_ENUM_MAP_ENTRY(info, REALLOCS),
+    MAKE_ENUM_MAP_ENTRY(info, FREES),
+};
+static MP_DEFINE_CONST_DICT(live_mem_info_locals_dict, live_mem_info_locals_table);
+
+
+MAKE_PRINTER(live_mem_info, live_mem_info);
+
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    live_mem_info_type,
+    MP_QSTR_LiveMemInfo,
+    MP_TYPE_FLAG_NONE,
+    print, live_mem_info_print,
+    locals_dict, &live_mem_info_locals_dict
+    );
+
+const mp_obj_type_t live_mem_info_type;
+#endif
+
+
+static mp_obj_t gc_mem_info_live(void) {
+    return gc_live_mem_info();
+}
+MP_DEFINE_CONST_FUN_OBJ_0(gc_mem_info_live_obj, gc_mem_info_live);
+
+#endif
+
 #if MICROPY_GC_ALLOC_THRESHOLD
 static mp_obj_t gc_threshold(size_t n_args, const mp_obj_t *args) {
     if (n_args == 0) {
@@ -108,6 +171,16 @@ static const mp_rom_map_elem_t mp_module_gc_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_isenabled), MP_ROM_PTR(&gc_isenabled_obj) },
     { MP_ROM_QSTR(MP_QSTR_mem_free), MP_ROM_PTR(&gc_mem_free_obj) },
     { MP_ROM_QSTR(MP_QSTR_mem_alloc), MP_ROM_PTR(&gc_mem_alloc_obj) },
+    #if CIRCUITPY_GC_TRACK_LIVE
+    { MP_ROM_QSTR(MP_QSTR_mem_free_live), MP_ROM_PTR(&gc_mem_free_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_quick_free_live), MP_ROM_PTR(&gc_mem_quick_free_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_quick_used_live), MP_ROM_PTR(&gc_mem_quick_used_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_alloc_live), MP_ROM_PTR(&gc_mem_alloc_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_reset_live), MP_ROM_PTR(&gc_mem_reset_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_sync_live), MP_ROM_PTR(&gc_mem_sync_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_info_live), MP_ROM_PTR(&gc_mem_info_live_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mem_collect_sync_live), MP_ROM_PTR(&gc_mem_collect_sync_live_obj) },
+    #endif
     #if MICROPY_GC_ALLOC_THRESHOLD
     { MP_ROM_QSTR(MP_QSTR_threshold), MP_ROM_PTR(&gc_threshold_obj) },
     #endif
