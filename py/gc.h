@@ -38,6 +38,9 @@
 void gc_init(void *start, void *end);
 // CIRCUITPY-CHANGE
 void gc_deinit(void);
+#ifndef CIRCUITPY_GC_TRACK_LIVE
+#define CIRCUITPY_GC_TRACK_LIVE 1
+#endif
 
 #if MICROPY_GC_SPLIT_HEAP
 // Used to add additional memory areas to the heap.
@@ -102,9 +105,6 @@ typedef struct _gc_info_t {
     #endif
 } gc_info_t;
 
-#ifndef CIRCUITPY_GC_TRACK_LIVE
-#define CIRCUITPY_GC_TRACK_LIVE 1
-#endif
 
 void gc_info(gc_info_t *info);
 void gc_dump_info(const mp_print_t *print);
@@ -127,15 +127,28 @@ mp_obj_t gc_live_mem_info(void);
 #define CPY_GCTLI_CAT3(A, B, C) CPY_GCTLI_CAT3_(A, B, C)
 
 
+// ATB tracking adds extra details which may be useful
+//  to help diagnose memory issues when cp_gc_live_info.used
+// isn't tracking correctly
+#define CPY_GCTLI_TRACK_ATB 0
+
 // single value entries
 #define CPY_GCTLI_ON_ENTRIES(MAC, DATA)    \
     MAC(used, DATA)                     \
     MAC(bytesPerBlock, DATA)            \
+
+#if CPY_GCTLI_TRACK_ATB
+#define CPY_GCTLI_ON_ATB_ENTRIES(MAC, DATA)    \
     MAC(A_FREE_TO_HEAD, DATA)           \
     MAC(A_FREE_TO_TAIL, DATA)           \
     MAC(A_ANY_TO_FREE, DATA)            \
     MAC(A_HEAD_TO_MARK, DATA)           \
     MAC(A_MARK_TO_HEAD, DATA)           \
+
+#else
+#define CPY_GCTLI_ON_ATB_ENTRIES(MAC, DATA)
+#endif
+
 
 // _count/_requested entries
 #define CPY_GCTLI_ON_CR_ENTRIES(MAC, DATA)   \
@@ -157,6 +170,7 @@ mp_obj_t gc_live_mem_info(void);
 
 typedef struct _gc_live_info_t {
     CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_ENTRY, ~)
+    CPY_GCTLI_ON_ATB_ENTRIES(CPY_GCTLI_ENTRY, ~)
     CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_ENTRY, ~)
 } gc_live_info_t;
 

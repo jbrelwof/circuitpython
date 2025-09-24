@@ -169,14 +169,22 @@ void __attribute__ ((noinline)) gc_log_change(uint32_t start_block, uint32_t len
 #if CIRCUITPY_GC_TRACK_LIVE
 gc_live_info_t cp_gc_live_info = {
     #define CPY_GCTLI_INIT(TAG, DATA) 0,
-    CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_INIT, ~)
+    #define CPY_GCTLI_CR_INIT(TAG, DATA) 0, 0,
+
+
+    CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_INIT, ~)
+
     0
 };
 
-
 #define CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, VAL) do { cp_gc_live_info.TAG += (VAL); } while (0);
 #define CIRCUITPY_GC_TRACK_LIVE_INC(TAG) CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, 1)
+
+#if CPY_GCTLI_TRACK_ATB
 #define CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG) CIRCUITPY_GC_TRACK_LIVE_ADD(CPY_GCTLI_CAT(A_, TAG), 1)
+#else
+#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG)
+#endif
 
 #define CIRCUITPY_GC_TRACK_LIVE_INC_ATB_FREE(TAG) do { \
         cp_gc_live_info.used -= BYTES_PER_BLOCK;  CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG); } while (0)
@@ -187,22 +195,24 @@ gc_live_info_t cp_gc_live_info = {
 
 #define CIRCUITPY_GC_TRACK_LIVE_USED_SUB(TAG, VAL) do { const size_t s = (VAL); cp_gc_live_info.used -= s; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count) += 1; cp_gc_live_info.CPY_GCTLI_CAT(TAG, _requested) += s;} while (0)
 
+#else
+
+#define CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, VAL)
+#define CIRCUITPY_GC_TRACK_LIVE_INC(TAG)
+#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG)
+#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB_FREE(TAG)
+#define CIRCUITPY_GC_TRACK_LIVE_REQUESTED(TAG, VAL)
+#define CIRCUITPY_GC_TRACK_LIVE_USED_ADD(TAG, VAL)
+#define CIRCUITPY_GC_TRACK_LIVE_USED_SUB(TAG, VAL)
+
+#endif
+
 #define CIRCUITPY_GC_TRACK_LIVE_ALLOC(size) CIRCUITPY_GC_TRACK_LIVE_USED_ADD(alloc, size)
 #define CIRCUITPY_GC_TRACK_LIVE_FREE(size) CIRCUITPY_GC_TRACK_LIVE_USED_SUB(free, size)
 #define CIRCUITPY_GC_TRACK_LIVE_REALLOC(size) CIRCUITPY_GC_TRACK_LIVE_REQUESTED(realloc, size)
 #define CIRCUITPY_GC_TRACK_LIVE_REALLOC_ALLOC(size) CIRCUITPY_GC_TRACK_LIVE_USED_ADD(realloc_alloc, size)
 #define CIRCUITPY_GC_TRACK_LIVE_REALLOC_FREE(size) CIRCUITPY_GC_TRACK_LIVE_USED_SUB(realloc_free, size)
 
-#else
-#define CIRCUITPY_GC_TRACK_LIVE_ADD(TAG, VAL)
-#define CIRCUITPY_GC_TRACK_LIVE_INC(TAG)
-#define CIRCUITPY_GC_TRACK_LIVE_INC_ATB(TAG)
-#define CIRCUITPY_GC_TRACK_LIVE_REQUESTED(TAG, VAL)
-#define CIRCUITPY_GC_TRACK_LIVE_ALLOC(size)
-#define CIRCUITPY_GC_TRACK_LIVE_REALLOC(oldSize, newSize)
-#define CIRCUITPY_GC_TRACK_LIVE_REALLOC_FREE(size)
-#define CIRCUITPY_GC_TRACK_LIVE_FREE(size)
-#endif
 
 // Static functions for individual steps of the GC mark/sweep sequence
 static void gc_collect_start_common(void);
@@ -1651,6 +1661,7 @@ int gc_live_mem_reset(void) {
     cp_gc_live_info.TAG = 0;     \
 
     CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_RESET, ~)
+    CPY_GCTLI_ON_ATB_ENTRIES(CPY_GCTLI_RESET, ~)
 
 #define CPY_GCTLI_CR_RESET(TAG, DATA)                    \
     cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count) = 0;     \
@@ -1687,6 +1698,7 @@ mp_obj_t gc_live_mem_info(void) {
 
     mp_obj_dict_t *dict = MP_OBJ_TO_PTR(mp_obj_new_dict((0
         CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_INFO_COUNT, ~)
+        CPY_GCTLI_ON_ATB_ENTRIES(CPY_GCTLI_INFO_COUNT, ~)
         CPY_GCTLI_ON_CR_ENTRIES(CPY_GCTLI_CR_INFO_COUNT, ~)
         )
         ));
@@ -1697,6 +1709,7 @@ mp_obj_t gc_live_mem_info(void) {
     mp_obj_dict_store(dict, MP_ROM_QSTR(CPY_GCTLI_CAT(MP_QSTR_, TAG)), MP_OBJ_NEW_SMALL_INT(cp_gc_live_info.TAG)); \
 
     CPY_GCTLI_ON_ENTRIES(CPY_GCTLI_INFO, ~)
+    CPY_GCTLI_ON_ATB_ENTRIES(CPY_GCTLI_INFO, ~)
 
 #define CPY_GCTLI_CR_INFO(TAG, DATA) \
     mp_obj_dict_store(dict, MP_ROM_QSTR(CPY_GCTLI_CAT3(MP_QSTR_, TAG, _count)), MP_OBJ_NEW_SMALL_INT(cp_gc_live_info.CPY_GCTLI_CAT(TAG, _count))); \
